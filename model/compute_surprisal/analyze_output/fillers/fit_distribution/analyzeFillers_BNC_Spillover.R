@@ -6,7 +6,7 @@ library(lme4)
 library(dplyr)
 
 # Read all model predictions
-model = read.csv("/u/scr/mhahn/reinforce-logs-both-short/calibration-full-logs-tsv/collect12_NormJudg_Short_Cond_W_GPT2_ByTrial_VN3_Fillers.py.tsv", sep="\t")
+model = read.csv("~/sda/RRLCS_LOGS/reinforce-logs-both-short/calibration-full-logs-tsv/collect12_NormJudg_Short_Cond_W_GPT2_ByTrial_VN3_Fillers.py.tsv", sep="\t")
 
 # Column indicating the position of each word in the setence
 model = model %>% mutate(wordInItem = as.numeric(as.character(Region))+1)
@@ -25,7 +25,7 @@ model = model %>% summarise(SurprisalReweighted=mean(as.numeric(as.character(Sur
 #  ID: ID of the model run
 #  predictability_weight: only take those with value 1
 #  deletion_rate: what fraction of the last N=20 words is forgotton on average. Only 0.05 is of interest here (for now, look at almost perfect memory)
-model = model %>% filter(grepl("_TPS", Script), predictability_weight==1)
+#model = model %>% filter(grepl("_TPS", Script), predictability_weight==1) # commenting this out (November 2023)
 model = model %>% filter(deletion_rate==0.05, predictability_weight==1)
 # Now, average across all model runs
 model = model %>% group_by(wordInItem, item) %>% summarise(SurprisalReweighted=mean(SurprisalReweighted, na.rm=TRUE))
@@ -69,14 +69,43 @@ rts = rts %>% select(wordInItem, item, workerid, rt, word) %>% filter(!grepl("Mi
 model$itemID = paste(model$item, model$wordInItem, sep="_")
 
 
+
 # Merge human data and model predictions
-      data = merge(model, rts, by=c("wordInItem", "item")) %>% filter(!is.na(LogWordFreq))
+      data = merge(model, rts, by=c("wordInItem", "item")) # %>% filter(!is.na(LogWordFreq))
+
+# Temporarily adding this here
+data$LogWordFreq = 0
 
 library(ggplot2)
 
 # Create visualizations
 plot = ggplot(data %>% group_by(wordInItem, item) %>% summarise(rt = mean(rt), SurprisalReweighted=mean(SurprisalReweighted, na.rm=TRUE), LogWordFreq=mean(LogWordFreq, na.rm=TRUE)), aes(x=SurprisalReweighted, y=rt)) + geom_smooth() + geom_point()
 ggsave(plot, file="figures/surprisal-rts-plot1.pdf", height=10, width=10)
+
+ggsave(plot, file="figures/rt_histogram_byPositionInItem.pdf", height=10, width=10)
+
+
+plot = ggplot(data, aes(x=rt)) + geom_histogram() + facet_wrap(~wordInItem)
+ggsave(plot, file="figures/rt_histogram_byPositionInItem.pdf", height=10, width=10)
+
+#u = data %>% group_by(wordInItem) %>% summarise(rt=mean(rt))
+plot = ggplot(data, aes(x=wordInItem, y=rt, group=wordInItem)) + geom_violin()
+ggsave(plot, file="figures/rt_line_byPositionInItem.pdf", height=7, width=30)
+
+#u = data %>% group_by(wordInItem) %>% summarise(c=cor(rt, SurprisalReweighted))
+#plot = ggplot(u, aes(x=wordInItem, y=c)) + geom_line()
+#ggsave(plot, file="figures/cor_line_byPositionInItem.pdf", height=7, width=30)
+
+
+
+# histograms for the words in an individual item
+u = data %>% filter(item == "Filler_2")
+plot = ggplot(u, aes(x=rt)) + geom_histogram() + facet_wrap(~wordInItem + word)
+ggsave(plot, file="figures/byItem/rt_histogram_Filler_2.pdf", height=10, width=10)
+
+
+
+
 
 plot = ggplot(data %>% group_by(wordInItem, item) %>% summarise(log_rt = mean(log(rt)), SurprisalReweighted=mean(SurprisalReweighted, na.rm=TRUE), LogWordFreq=mean(LogWordFreq, na.rm=TRUE)), aes(x=SurprisalReweighted, y=log_rt)) + geom_smooth() + geom_point()
 ggsave(plot, file="figures/surprisal-rts-plot2.pdf", height=10, width=10)
