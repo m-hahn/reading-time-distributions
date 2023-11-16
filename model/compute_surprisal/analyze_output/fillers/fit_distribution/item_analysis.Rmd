@@ -1,0 +1,237 @@
+---
+title: "RT item-level analysis"
+output: pdf_document
+date: "2023-11-08"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(magrittr)
+library(data.table)
+library(ggplot2)
+library(stringi)
+```
+
+data processing adapted from script [`analyzeFillers_BNC.Spillover.r`](./analyzeFillers_BNC_Spillover.R)
+
+```{r load_word_stats}
+
+model = fread("cached_data/model_surprisal.tsv", sep="\t")
+# Some further processing
+model$LowerCaseToken = stri_trans_tolower(model$Word)
+model$WordLength = nchar(as.character(model$Word))
+
+# COCA word frequencies
+word_freq_50000 = fread("stimuli-coca-frequencies.tsv", sep="\t", quote=FALSE)
+word_freq_50000$LogWordFreq_COCA = log(word_freq_50000$Frequency)
+model = merge(model, word_freq_50000, by=c("LowerCaseToken"), all=TRUE)
+
+# BNC word frequencies
+word_freq_50000 = fread("stimuli-bnc-frequencies.tsv", sep="\t", quote=FALSE)
+word_freq_50000$LogWordFreq = log(word_freq_50000$Frequency)
+model = merge(model, word_freq_50000, by=c("LowerCaseToken"), all=TRUE)
+
+# Residualize COCA on BNC
+model$LogWordFreq_COCA.R = resid(lm(LogWordFreq_COCA~LogWordFreq, data=model, na.action=na.exclude))
+```
+```{r load_exp_data}
+# Load human data from Experiments 1 and 2
+data1 = fread("../../../../../experiments/maze/experiment1/Submiterator-master/trials_byWord.tsv",sep="\t",quote="@") %>% 
+  .[ , workerid := workerid]
+data2 = fread("../../../../../experiments/maze/experiment2/Submiterator-master/trials-experiment2.tsv",sep="\t",quote="@") %>% 
+  .[ , workerid := workerid+1000] %>%
+  .[ , V1 := NULL] # drop first col of row numbers
+
+# Add data from resource rational expt
+data3 = fread("../../../../../../resource-rational-surprisal/experiments/maze/previous/study5_replication/Submiterator-master/all_trials.tsv") %>% 
+  .[ , workerid := workerid+2000] %>%
+  .[ , group := NULL] %>% # delete group field until informed otherwise
+  .[ , distractor := ""] # add dummy 'distractor' field to match other data formats
+
+rts = rbind(data1, data2, data3)
+
+# Removing extreme values. Might actually prefer not to do this here.
+#rts = rts[rts$rt < quantile(rts$rt, 0.99),]
+#rts = rts[rts$rt > quantile(rts$rt, 0.01),]
+# Kate: shift this to storing extreme value cutoffs & use to filter later
+rts_01q_99q = rts[ , c(quantile(rt, 0.01), quantile(rt, 0.99))]
+
+rts = rts %>%
+  .[ , item := stri_replace_all_fixed(item, "232_", "")] %>% # Remove an extraneous "232_" that arises in some items/experiments
+  .[!stri_detect_fixed(item, "Mixed")] %>% # remove... 'mixed' items?
+  .[!stri_detect_fixed(item, "Critical")] %>% # remove critical items
+  .[!stri_detect_fixed(item, "Practice")] %>% # remove practice items
+  .[wordInItem > 0] %>% # remove sentence-initial words, they don't get surprisal predictions
+  .[ , .(wordInItem, item, workerid, rt, word)] # just these columns plz
+
+# rts[ , .N] # data1,data2: 128224 # + data3: 302891
+```
+```{r merge_model_and_exp_data}
+model$itemID = paste(model$item, model$wordInItem, sep="_")
+
+# Merge human data and model predictions
+data = merge(model, rts, by=c("wordInItem", "item")) # %>% filter(!is.na(LogWordFreq))
+
+# Temporarily adding this here
+data$LogWordFreq = 0
+
+```
+
+quick look at stimuli
+
+```{r stim_look}
+
+data %>%
+  .[ , .(n_items=length(unique(item)), 
+         n_positions=length(unique(wordInItem)), 
+         .N), 
+     LowerCaseToken] %>%
+  .[ , .N, .(n_items, n_positions)] %>%
+  .[order(-N, -n_items, n_positions)]
+```
+
+so most words (360) appear in only one filler item - two of them occur twice in that item, all the rest just once.
+
+68 words occur in more than one item.
+
+
+```{r aggregate_data}
+
+RT_avg = data %>% 
+  .[rt > min(rts_01q_99q) & rt < max(rts_01q_99q)] %>% 
+  # N.B. ^ filter out extreme values here if desired
+  .[ , .(rt = mean(rt), 
+         q05 = quantile(rt, .05),
+         q25 = quantile(rt, .25),
+         q75 = quantile(rt, .75),
+         q95 = quantile(rt, .95),
+         SurprisalReweighted=mean(SurprisalReweighted, na.rm=TRUE), 
+         LogWordFreq=mean(LogWordFreq, na.rm=TRUE)),
+     .(wordInItem, item, word, LowerCaseToken)] %>%
+  .[ , word_measure_count := .N, LowerCaseToken]
+
+```
+```{r key_plots}
+
+# plot =
+ggplot(RT_avg, aes(x=SurprisalReweighted, y=rt)) + 
+  geom_text(aes(label=LowerCaseToken)) +
+  #geom_path(aes(group=word)) +
+  #geom_text(aes(label=word, y=q25), col="green") +
+  #geom_text(aes(label=word, y=q75), col="green") +
+  geom_smooth() + 
+  geom_smooth(aes(y=q25), col="green") + 
+  geom_smooth(aes(y=q75), col="green") + 
+  geom_smooth(aes(y=q05), col="yellow") + 
+  geom_smooth(aes(y=q95), col="yellow") + 
+  #geom_point()
+  theme_minimal() #+
+  #facet_grid(LowerCaseToken ~ .)
+  #facet_grid(stri_endswith_fixed(word, ".") ~ .)
+#ggsave(plot, file="figures/surprisal-rts-plot1.pdf", height=10, width=10)
+
+# plot = 
+ggplot(RT_avg, aes(x=exp(-SurprisalReweighted), y=rt)) + 
+  geom_text(aes(label=word)) +
+  geom_smooth() + 
+  #geom_point()
+  theme_minimal()
+#ggsave(plot, file="figures/surprisal-rts-plot3.pdf", height=10, width=10)
+
+
+ggsave("figures/surprisal-within-word.pdf",
+ggplot(RT_avg[word_measure_count>1], 
+       aes(x=SurprisalReweighted, 
+           #x=exp(-SurprisalReweighted),
+           y=rt)) + 
+  geom_text(aes(label=LowerCaseToken)) +
+  #geom_density_2d(data=RT_avg[word_measure_count>1], aes(group=LowerCaseToken)) +
+  #geom_text(aes(label=word, y=q25), col="green") +
+  #geom_text(aes(label=word, y=q75), col="green") +
+  geom_smooth() + 
+  geom_smooth(data=RT_avg[word_measure_count>6],  # word-level smooths just for higher-freq. words
+              aes(group=LowerCaseToken, col=LowerCaseToken),
+              alpha=0.1) + 
+  #geom_smooth(aes(y=q25), col="green", alpha=0) + 
+  #geom_smooth(aes(y=q75), col="green", alpha=0) + 
+  #geom_smooth(aes(y=q05), col="yellow") + 
+  #geom_smooth(aes(y=q95), col="yellow") + 
+  facet_grid(cut(word_measure_count, breaks=c(0,1,3,10, # hand-selected frequencies from looking at data
+                                              11,13,20,23,115)) ~ .,
+             scales="free") +
+  #geom_point()
+  theme_minimal()  +
+  xlim(c(0, 13)) +
+  ggtitle("Surprisal of multipy-measured tokens in filler items")
+, h=12, w=8)
+
+ggsave("figures/probability-within-word.pdf",
+ggplot(RT_avg[word_measure_count>1], 
+       aes(#x=SurprisalReweighted, 
+           x=exp(-SurprisalReweighted),
+           y=rt)) + 
+  geom_text(aes(label=LowerCaseToken)) +
+  #geom_density_2d(data=RT_avg[word_measure_count>1], aes(group=LowerCaseToken)) +
+  #geom_text(aes(label=word, y=q25), col="green") +
+  #geom_text(aes(label=word, y=q75), col="green") +
+  geom_smooth() + 
+  geom_smooth(data=RT_avg[word_measure_count>7], # word-level smooths just for higher-freq. words
+              aes(group=LowerCaseToken, col=LowerCaseToken),
+              alpha=0.1) + 
+  #geom_smooth(aes(y=q25), col="green", alpha=0) + 
+  #geom_smooth(aes(y=q75), col="green", alpha=0) + 
+  #geom_smooth(aes(y=q05), col="yellow") + 
+  #geom_smooth(aes(y=q95), col="yellow") + 
+  facet_grid(cut(word_measure_count, breaks=c(0,1,3,10,
+                                              11,13,20,23,115)) ~ .,
+             scales="free") +
+  #geom_point()
+  theme_minimal() +
+  ylim(c(400, 1650)) +
+  ggtitle("Probability of multipy-measured tokens in filler items")
+, h=12, w=8)
+
+```
+
+```{r}
+# preliminary modeling
+
+# test: lm (rt ~ SurpR + exp(-SurpR) 
+
+mod1 = lm( rt ~ SurprisalReweighted + exp(-SurprisalReweighted), RT_avg)
+mod2 = lm( rt ~ SurprisalReweighted, RT_avg)
+
+summary(mod1)
+
+AIC(mod1, mod2) # small but significant additive effect of linear-prob term
+
+# second check: apply hierarchical mixed-effects model on raw data directly
+
+library(lme4)
+
+mod3 = lmer(rt ~ SurprisalReweighted + exp(-SurprisalReweighted) + #(1|LowerCaseToken) + # should probably include this, but this term prevents mod4 from converging
+              (1|itemID)  + (1|workerid), data[rt > min(rts_01q_99q) & rt < max(rts_01q_99q)])
+summary(mod3)
+
+mod4 = lmer(rt ~ SurprisalReweighted + (1|itemID)  + (1|workerid), data[rt > min(rts_01q_99q) & rt < max(rts_01q_99q)])
+
+AIC(mod3, mod4) # also shows up here in mixed-effet model
+```
+
+```{r more_plots}
+#ggplot(data[rt > min(rts_01q_99q) & rt < max(rts_01q_99q)], 
+#       aes(x=SurprisalReweighted, y=rt)) + 
+#  geom_smooth() + 
+#  geom_boxplot(aes(group=paste(word, itemID)))
+
+# sanity check - surprisal as a function of word position
+ggplot(data, aes(wordInItem, SurprisalReweighted)) +
+  geom_text(aes(label=word)) +
+  geom_smooth() +
+  theme_minimal() +
+  facet_grid(stri_endswith_fixed(word, ".") ~ .)
+
+```
+
+
+
